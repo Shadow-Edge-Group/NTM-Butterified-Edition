@@ -153,7 +153,10 @@ public final class NeoForgePlatform {
             if (state != null
                     && state.getWeakChanges(level, relative)
                     && (direction.getAxis().isHorizontal() || !state.is(Blocks.COMPARATOR))) {
-                level.neighborChanged(state, relative, changed, null, false);
+                // backport-fix: BF-100 26.x passes a nullable Orientation here; 1.21.1's fourth argument is the
+                // source position, and null crashed CollectingNeighborUpdater (fromPos.immutable()) whenever a
+                // comparator sat behind a solid block. Vanilla 1.21.1 updateNeighbourForOutputSignal passes pos.
+                level.neighborChanged(state, relative, changed, pos, false);
             }
         }
     }
@@ -207,7 +210,7 @@ public final class NeoForgePlatform {
     public static boolean canFitInsideContainerItems(ItemStack stack) {
         return stack.canFitInsideContainerItems()
                 && !stack.is(HbmItemTags.NO_CONTAINER_NESTING)
-                && !stack.has(DataComponents.CONTAINER)
+                && !com.hbm.backport.ContainerNesting.holdsItems(stack) /* backport-fix: BF-102 */
                 && !stack.has(DataComponents.BUNDLE_CONTENTS)
                 && (stack.isEmpty()
                         || stack.getCapability(Capabilities.Item.ITEM, ItemAccess.forStack(stack))

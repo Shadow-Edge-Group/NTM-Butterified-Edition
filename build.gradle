@@ -175,6 +175,10 @@ dependencies {
     compileOnly "maven.modrinth:Ps1zyz6x:9KuFoPhC"
     // Traveler's Backpack 10.x for 1.21.1: radiation of backpack contents, the worn backpack (com.hbm.neoforge.hazard)
     implementation "curse.maven:travelers-backpack-321117:8762814"
+    // Applied Energistics 2 19.2.18 for 1.21.1 NeoForge (Discord #5: Pattern Provider next to multiblock cells);
+    // GuideME 21.1.19 is the guidebook library AE2 requires at runtime
+    implementation "maven.modrinth:ae2:19.2.18"
+    runtimeOnly "maven.modrinth:guideme:21.1.19"
     // Dev runs get one of two stacks (gradle.properties: dev_stack): Sable 2.x refuses to start next to
     // ScalableLux of any version, so they can't share a run. Neither ends up in the jar or our dependencies.
     if (project.findProperty('dev_stack') == 'scalablelux') {
@@ -184,6 +188,10 @@ dependencies {
         runtimeOnly "curse.maven:create-328085:7963363"              // Create 6.0.10
         runtimeOnly "curse.maven:sable-1312371:8673825"              // Sable 2.0.5 (NeoForge)
         runtimeOnly "curse.maven:create-aeronautics-676721:8763471"  // Create Aeronautics 1.3.2
+    }
+    // spark profiler in dev runs (/spark profiler, /spark tickmonitor; thread dumps of a hung server)
+    if (project.findProperty('dev_spark') != 'false') {
+        runtimeOnly "maven.modrinth:l6YH9Als:v5qtqRQi"                  // spark 1.10.124 (NeoForge 1.21.1)
     }
 }
 
@@ -198,6 +206,7 @@ configurations {
     devModWorldedit { transitive = false }
     devModIris { transitive = false }
     devModColorwheel { transitive = false }
+    devModSorter { transitive = false }
 }
 dependencies {
     devModSodium "maven.modrinth:AANobbMI:uMOpc5uV"                  // Sodium 0.8.13 for 1.21.1 NeoForge
@@ -217,38 +226,67 @@ dependencies {
     // Colorwheel 1.3.0 (1.21.1 NeoForge, LGPL-3.0, djefrey): draws Flywheel instances through the shader pack, so
     // instancing/indirect stay on under Iris. Not bundled: it requires Iris; players add it themselves
     devModColorwheel "curse.maven:colorwheel-1254143:8990905"
+    // Inventory Sorter (cpw, CurseForge 240633): a player reported items of NTM vanishing when it sorted a
+    // steel crate (middle click sorts the container under the cursor)
+    devModSorter "curse.maven:inventory-sorter-240633:7188660"
+}
+// Copies the enabled dev mods into a run's mods folder. <mods>/.dev-mods lists the jars put there, so a jar
+// whose dependency changed (another version or another mod) is removed too, not only the ones of a toggle
+// that is off now.
+def syncModsInto = { File modsDir, List sets ->
+    modsDir.mkdirs()
+    def manifest = new File(modsDir, '.dev-mods')
+    def previous = manifest.exists() ? manifest.readLines().findAll { it } as Set : [] as Set
+    def wanted = [] as Set
+    sets.each { set -> if (set[1]) set[0].each { wanted << it.name } }
+    previous.findAll { !wanted.contains(it) }.each { new File(modsDir, it).delete() }
+    sets.each { set ->
+        set[0].each { jar ->
+            def target = new File(modsDir, jar.name)
+            if (set[1]) {
+                if (!target.exists()) java.nio.file.Files.copy(jar.toPath(), target.toPath())
+            } else {
+                target.delete()
+            }
+        }
+    }
+    manifest.text = wanted.join('\n')
+}
+// mods that have a server side: a client and a dedicated server must agree on them (KubeJS's client
+// otherwise sends its kubejs:first_click packet to a server that doesn't know it and crashes; Inventory
+// Sorter sorts on the server)
+def commonDevMods = {
+    [
+            [configurations.devModWthit, project.findProperty('dev_wthit') != 'false'],
+            [configurations.devModKubejs, project.findProperty('dev_kubejs') != 'false'],
+            [configurations.devModWorldedit, project.findProperty('dev_worldedit') != 'false'],
+            [configurations.devModSorter, project.findProperty('dev_sorter') != 'false'],
+    ]
 }
 tasks.register('syncDevMods') {
     def modsDir = file('run/mods')
     def sets = [
             [configurations.devModSodium, project.findProperty('dev_sodium') != 'false'],
             [configurations.devModImmediatelyFast, project.findProperty('dev_immediatelyfast') == 'true'],
-            [configurations.devModWthit, project.findProperty('dev_wthit') != 'false'],
-            [configurations.devModKubejs, project.findProperty('dev_kubejs') != 'false'],
-            [configurations.devModWorldedit, project.findProperty('dev_worldedit') != 'false'],
             [configurations.devModIris, project.findProperty('dev_iris') == 'true'
                     && project.findProperty('dev_sodium') != 'false'],
             [configurations.devModColorwheel, project.findProperty('dev_colorwheel') == 'true'
                     && project.findProperty('dev_iris') == 'true'
                     && project.findProperty('dev_sodium') != 'false'],
-    ]
+    ] + commonDevMods()
     sets.each { inputs.files(it[0]) }
-    doLast {
-        modsDir.mkdirs()
-        sets.each { set ->
-            set[0].each { jar ->
-                def target = new File(modsDir, jar.name)
-                if (set[1]) {
-                    if (!target.exists()) java.nio.file.Files.copy(jar.toPath(), target.toPath())
-                } else {
-                    target.delete()
-                }
-            }
-        }
-    }
+    doLast { syncModsInto(modsDir, sets) }
+}
+// the dedicated server (runs/server) gets the mods with a server side only
+tasks.register('syncServerDevMods') {
+    def modsDir = file('runs/server/mods')
+    def sets = commonDevMods()
+    sets.each { inputs.files(it[0]) }
+    doLast { syncModsInto(modsDir, sets) }
 }
 // both the Gradle run and IntelliJ's run configuration (it calls the prepare task first)
 tasks.matching { it.name == 'runClient' || it.name == 'prepareClientRun' }.configureEach { dependsOn 'syncDevMods' }
+tasks.matching { it.name == 'runServer' || it.name == 'prepareServerRun' }.configureEach { dependsOn 'syncServerDevMods' }
 
 // The version goes into neoforge.mods.toml as text: CurseForge doesn't resolve ${file.jarVersion}.
 // A plain replace instead of expand(), so other '$' in the file stay untouched.
